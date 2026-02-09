@@ -1,0 +1,185 @@
+name: Build JAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: 'Build job ID'
+        required: true
+        type: string
+      definitionId:
+        description: 'API Definition ID'
+        required: true
+        type: string
+      sourceR2Key:
+        description: 'R2 key for source ZIP'
+        required: true
+        type: string
+      callbackUrl:
+        description: 'Cloudflare callback URL (optional)'
+        required: false
+        type: string
+      callbackToken:
+        description: 'Callback authentication token (optional)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install R2 upload script dependencies
+        run: |
+          npm install @aws-sdk/client-s3
+
+      - name: Download source ZIP from R2
+        run: |
+          # Use AWS SDK configured for R2 (no AWS account needed)
+          # R2 is S3-compatible, so we use S3 SDK pointing to R2 endpoint
+          node -e "
+          const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+          const fs = require('fs');
+          const client = new S3Client({
+            region: 'auto',
+            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            credentials: {
+              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
+              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+            }
+          });
+          const command = new GetObjectCommand({
+            Bucket: '${{ secrets.R2_BUCKET_NAME }}',
+            Key: '${{ inputs.sourceR2Key }}'
+          });
+          client.send(command).then((response) => {
+            const stream = response.Body;
+            const file = fs.createWriteStream('/tmp/source.zip');
+            stream.pipe(file);
+            file.on('finish', () => file.close());
+          });
+          "
+
+      - name: Extract source files
+        run: |
+          unzip -q /tmp/source.zip -d /tmp/build
+          cd /tmp/build
+          chmod +x gradlew
+
+      - name: Build with Gradle
+        working-directory: /tmp/build
+        run: |
+          ./gradlew build --no-daemon --stacktrace
+        continue-on-error: false
+
+      - name: Find generated JAR
+        id: find-jar
+        working-directory: /tmp/build
+        run: |
+          JAR_FILE=$(find build/libs -name "*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
+          echo "jar_path=$JAR_FILE" >> $GITHUB_OUTPUT
+          echo "jar_name=$(basename $JAR_FILE)" >> $GITHUB_OUTPUT
+
+      - name: Upload JAR to R2
+        run: |
+          # Upload JAR to R2 using AWS SDK configured for R2
+          # No AWS account needed - R2 is S3-compatible
+          node -e "
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const fs = require('fs');
+          const client = new S3Client({
+            region: 'auto',
+            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            credentials: {
+              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
+              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+            }
+          });
+          const jarPath = '${{ steps.find-jar.outputs.jar_path }}';
+          const jarData = fs.readFileSync(jarPath);
+          const command = new PutObjectCommand({
+            Bucket: '${{ secrets.R2_BUCKET_NAME }}',
+            Key: 'jars/${{ inputs.definitionId }}/${{ github.run_id }}_${{ steps.find-jar.outputs.jar_name }}',
+            Body: jarData,
+            ContentType: 'application/java-archive'
+          });
+          client.send(command).then(() => {
+            console.log('JAR uploaded successfully');
+          }).catch((err) => {
+            console.error('Upload failed:', err);
+            process.exit(1);
+          });
+          "
+
+      - name: Upload build logs
+        if: always()
+        run: |
+          mkdir -p /tmp/logs
+          echo "${{ github.run_id }}" > /tmp/logs/run_id.txt
+          echo "${{ github.run_number }}" > /tmp/logs/run_number.txt
+          echo "${{ github.workflow }}" > /tmp/logs/workflow.txt
+          echo "${{ github.repository }}" > /tmp/logs/repository.txt
+          
+          # Upload logs to R2 using AWS SDK (no AWS account needed)
+          node -e "
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const fs = require('fs');
+          const client = new S3Client({
+            region: 'auto',
+            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            credentials: {
+              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
+              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+            }
+          });
+          const files = ['run_id.txt', 'run_number.txt', 'workflow.txt', 'repository.txt'];
+          Promise.all(files.map(filename => {
+            const filePath = '/tmp/logs/' + filename;
+            if (fs.existsSync(filePath)) {
+              const data = fs.readFileSync(filePath);
+              const command = new PutObjectCommand({
+                Bucket: '${{ secrets.R2_BUCKET_NAME }}',
+                Key: 'build-logs/${{ inputs.jobId }}/' + filename,
+                Body: data
+              });
+              return client.send(command);
+            }
+          })).then(() => console.log('Logs uploaded'));
+          "
+
+      - name: Notify Cloudflare (if callback provided)
+        if: always() && inputs.callbackUrl != ''
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            STATUS="completed"
+          else
+            STATUS="failed"
+          fi
+          
+          curl -X POST "${{ inputs.callbackUrl }}" \
+            -H "Authorization: Bearer ${{ inputs.callbackToken }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"jobId\": \"${{ inputs.jobId }}\",
+              \"status\": \"$STATUS\",
+              \"runId\": \"${{ github.run_id }}\",
+              \"runNumber\": \"${{ github.run_number }}\",
+              \"jarR2Key\": \"jars/${{ inputs.definitionId }}/${{ github.run_id }}_${{ steps.find-jar.outputs.jar_name }}\",
+              \"workflowUrl\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }"
