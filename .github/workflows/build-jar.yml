@@ -49,25 +49,32 @@ jobs:
         run: npm install @aws-sdk/client-s3
 
       - name: Set R2 bucket (preview vs production)
+        id: bucket
         run: |
           if [ -n "$R2_BUCKET_BASE" ]; then
             SUFFIX=""
             [ "$USE_PREVIEW_BUCKET" = "true" ] && SUFFIX="-preview"
             BUCKET="${R2_BUCKET_BASE}${SUFFIX}"
+            MODE="$([ "$USE_PREVIEW_BUCKET" = "true" ] && echo 'preview' || echo 'production')"
           else
             BUCKET="$R2_BUCKET_NAME_FALLBACK"
+            MODE="custom"
           fi
           echo "R2_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
-          echo "Using bucket: $BUCKET"
+          echo "bucket_mode=$MODE" >> $GITHUB_OUTPUT
+          echo "definition_id=${{ inputs.definitionId }}" >> $GITHUB_OUTPUT
+          echo "::notice title=R2 config::Bucket mode=$MODE, definitionId=${{ inputs.definitionId }}, usePreviewBucket=$USE_PREVIEW_BUCKET"
+          echo "Bucket configured. Mode: $MODE (preview=api-bldr-data-cache-r2-preview, production=api-bldr-data-cache-r2)"
         env:
           R2_BUCKET_BASE: ${{ secrets.R2_BUCKET_BASE }}
           R2_BUCKET_NAME_FALLBACK: ${{ secrets.R2_BUCKET_NAME }}
           USE_PREVIEW_BUCKET: ${{ inputs.usePreviewBucket }}
 
-      - name: Check package exists in R2
+      - name: List and verify package in R2
         run: |
           node -e "
-          const { S3Client, HeadObjectCommand } = require('@aws-sdk/client-s3');
+          const { S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+
           const client = new S3Client({
             region: 'auto',
             endpoint: process.env.R2_ENDPOINT,
@@ -76,18 +83,91 @@ jobs:
               secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
             }
           });
-          const key = 'packages/${{ inputs.definitionId }}/field-mapping.json';
+
+          const bucket = process.env.R2_BUCKET_NAME;
+          const definitionId = '${{ inputs.definitionId }}';
+          const prefix = 'packages/' + definitionId + '/';
+
+          console.log('=== R2 diagnostics ===');
+          const ep = process.env.R2_ENDPOINT || '';
+          const epHost = ep ? (ep.split('//')[1] || '').split('/')[0] || 'set' : 'NOT SET';
+          console.log('Endpoint host:', epHost);
+          console.log('Bucket: len=', bucket ? bucket.length : 0, 'preview=', bucket ? bucket.endsWith('-preview') : 'n/a');
+          console.log('Prefix:', prefix);
+          console.log('definitionId:', definitionId);
+          console.log('');
+
           (async () => {
+            // 1. List all objects under prefix
+            let listed = [];
             try {
-              await client.send(new HeadObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key }));
-              console.log('Package found in R2');
+              const list = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: 100 }));
+              listed = (list.Contents || []).map(o => o.Key).filter(Boolean);
+              console.log('Objects found under ' + prefix + ':');
+              if (listed.length === 0) {
+                console.log('  (none)');
+                console.error('');
+                console.error('ERROR: No objects found. Package may not exist or wrong bucket.');
+                console.error('API: ListObjectsV2 succeeded but returned 0 objects.');
+                console.error('Fix: Run package generation in API Builder first, or check R2_BUCKET_BASE/R2_BUCKET_NAME matches where API Builder uploaded.');
+                process.exit(1);
+              }
+              listed.forEach(k => console.log('  - ' + k));
+              console.log('');
             } catch (e) {
-              console.error('Package not found. Run package generation first for this definition.');
-              console.error('Expected: ' + key);
-              console.error('Bucket: ' + process.env.R2_BUCKET_NAME);
-              console.error('Hint: If you used the local API Builder, R2_BUCKET_NAME must be api-bldr-data-cache-r2-preview. For production: api-bldr-data-cache-r2.');
+              console.error('API: ListObjectsV2 FAILED');
+              console.error('Error:', e.name, e.message);
+              console.error('Code:', e.\$metadata?.httpStatusCode || e.Code || 'unknown');
+              if (e.Code) console.error('AWS Code:', e.Code);
+              throw e;
+            }
+
+            // 2. Must have field-mapping.json first (needed to know handlers)
+            const requiredBase = ['field-mapping.json', 'servlet.java', 'FieldMapper.java', 'openapi.json'];
+            const baseKey = prefix + 'field-mapping.json';
+
+            let headErr = null;
+            try {
+              await client.send(new HeadObjectCommand({ Bucket: bucket, Key: baseKey }));
+            } catch (e) {
+              headErr = e;
+            }
+            if (headErr) {
+              console.error('');
+              console.error('ERROR: field-mapping.json not found or not accessible.');
+              console.error('Key:', baseKey);
+              console.error('API: HeadObject FAILED');
+              console.error('Error:', headErr.name, headErr.message);
+              console.error('Code:', headErr.\$metadata?.httpStatusCode || headErr.Code);
               process.exit(1);
             }
+
+            // 3. Fetch field-mapping to get handlers, then verify all required files exist
+            const fmRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: baseKey }));
+            const fm = JSON.parse(await fmRes.Body.transformToString());
+            const handlers = fm.handlers || [];
+            const requiredFiles = [...requiredBase, ...handlers.map(h => 'handlers/' + h + '.java')];
+
+            const missing = [];
+            for (const f of requiredFiles) {
+              const key = prefix + f;
+              try {
+                await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+              } catch (e) {
+                missing.push(f);
+              }
+            }
+
+            if (missing.length > 0) {
+              console.error('');
+              console.error('ERROR: Required files missing in R2:');
+              missing.forEach(f => console.error('  - ' + f));
+              console.error('');
+              console.error('Files present:', listed.join(', '));
+              process.exit(1);
+            }
+
+            console.log('All required files verified:', requiredFiles.join(', '));
           })();
           "
         env:
@@ -116,23 +196,29 @@ jobs:
           const definitionId = '${{ inputs.definitionId }}';
           const prefix = 'packages/' + definitionId + '/';
 
-          async function get(key) {
+          async function get(key, step) {
             try {
               const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
               const res = await client.send(cmd);
               return await res.Body.transformToString();
             } catch (e) {
-              const msg = e.message || '';
-              const hint = msg.includes('does not exist') || msg.includes('NoSuchKey')
-                ? ' Run package generation first, or ensure R2_BUCKET_NAME matches where the API Builder uploaded (api-bldr-data-cache-r2-preview for local, api-bldr-data-cache-r2 for prod).'
-                : '';
-              throw new Error('Failed to get ' + key + ': ' + msg + hint);
+              console.error('');
+              console.error('=== Download FAILED ===');
+              console.error('File:', key);
+              console.error('Step:', step);
+              console.error('API: GetObject');
+              console.error('Error:', e.name, e.message);
+              console.error('Code:', e.\$metadata?.httpStatusCode || e.Code);
+              if (e.Code) console.error('AWS Code:', e.Code);
+              console.error('Bucket:', bucket ? '(configured)' : 'NOT SET');
+              console.error('');
+              throw e;
             }
           }
 
           (async () => {
             // 1. field-mapping.json
-            const fm = JSON.parse(await get(prefix + 'field-mapping.json'));
+            const fm = JSON.parse(await get(prefix + 'field-mapping.json', '1/6'));
             const apiPack = (fm.apiPack || 'api').toLowerCase();
             const version = fm.version || '1.0';
             const handlers = fm.handlers || [];
@@ -143,7 +229,7 @@ jobs:
             fs.writeFileSync('/tmp/handlers.json', JSON.stringify(handlers));
 
             // 2. servlet
-            const servlet = await get(prefix + 'servlet.java');
+            const servlet = await get(prefix + 'servlet.java', '2/6');
             const servletPath = 'src/main/java/com/tririga/custom/' + apiPack + '.java';
             fs.mkdirSync(path.dirname(servletPath), { recursive: true });
             fs.writeFileSync(servletPath, servlet);
@@ -152,19 +238,19 @@ jobs:
             try { fs.unlinkSync('src/main/java/com/tririga/custom/{{API_PACK_NAME}}.java'); } catch (_) {}
 
             // 4. FieldMapper
-            const fieldMapper = await get(prefix + 'FieldMapper.java');
+            const fieldMapper = await get(prefix + 'FieldMapper.java', '4/6');
             fs.mkdirSync('src/main/java/com/konvergex/apigen/common', { recursive: true });
             fs.writeFileSync('src/main/java/com/konvergex/apigen/common/FieldMapper.java', fieldMapper);
 
             // 5. Handlers
             fs.mkdirSync('src/main/java/com/konvergex/apigen/handlers', { recursive: true });
             for (const h of handlers) {
-              const content = await get(prefix + 'handlers/' + h + '.java');
+              const content = await get(prefix + 'handlers/' + h + '.java', '5/6 handlers');
               fs.writeFileSync('src/main/java/com/konvergex/apigen/handlers/' + h + '.java', content);
             }
 
             // 6. openapi.json - for /doc and /openapi.json endpoints (servlet reads from classpath)
-            const openapi = await get(prefix + 'openapi.json');
+            const openapi = await get(prefix + 'openapi.json', '6/6');
             fs.mkdirSync('src/main/resources', { recursive: true });
             fs.writeFileSync('src/main/resources/openapi.json', openapi);
 
