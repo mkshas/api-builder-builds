@@ -61,7 +61,7 @@ public abstract class BaseServlet implements IConnect {
             switch (method) {
                 case "GET":
                     logger.debug("Routing to handleGet()");
-                    handleGet(tririga, pathInfo, queryParams, response);
+                    handleGet(tririga, pathInfo, queryParams, request, response);
                     break;
                 case "POST":
                     logger.debug("Routing to handlePost()");
@@ -93,9 +93,10 @@ public abstract class BaseServlet implements IConnect {
      * @param tririga TRIRIGA Web Service
      * @param pathInfo Full path info from request (e.g., "/worktasks" or "/worktasks/12345/comments")
      * @param queryParams Query parameters
+     * @param request HTTP servlet request (needed for /doc endpoint to build openapi.json URL)
      * @param response HTTP servlet response
      */
-    protected abstract void handleGet(TririgaWS tririga, String pathInfo, Map<String, String> queryParams, HttpServletResponse response) throws Exception;
+    protected abstract void handleGet(TririgaWS tririga, String pathInfo, Map<String, String> queryParams, HttpServletRequest request, HttpServletResponse response) throws Exception;
 
     /**
      * Handle POST request.
