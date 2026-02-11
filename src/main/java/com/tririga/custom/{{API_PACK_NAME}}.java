@@ -304,9 +304,14 @@ public class {{API_PACK_NAME}} extends BaseServlet {
         // Use hardcoded API pack (no JSON dependency)
         String apiPack = API_PACK;
 
-        // Remove leading/trailing slashes and split
+        // Remove leading/trailing slashes and split; filter empty segments (trailing slash, double slash)
         String cleanPath = pathInfo.startsWith("/") ? pathInfo.substring(1) : pathInfo;
-        String[] pathParts = cleanPath.split("/");
+        String[] rawParts = cleanPath.split("/");
+        java.util.List<String> nonEmpty = new java.util.ArrayList<>();
+        for (String p : rawParts) {
+            if (p != null && !p.isEmpty()) nonEmpty.add(p);
+        }
+        String[] pathParts = nonEmpty.toArray(new String[0]);
         
         if (pathParts.length == 0) {
             return null;
@@ -402,7 +407,8 @@ public class {{API_PACK_NAME}} extends BaseServlet {
             }
             RouteContext context = new RouteContext("worktasks", triWorkTaskHandler);
             if (pathParts.length >= 2) {
-                context.id = pathParts[1];
+                String id = pathParts[1];
+                if (id != null && !id.isEmpty()) context.id = id;
             }
             return context;
         }
