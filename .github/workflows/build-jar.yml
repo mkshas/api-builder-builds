@@ -198,6 +198,10 @@ jobs:
             const fm = JSON.parse(await fmRes.Body.transformToString());
             const handlers = fm.handlers || [];
             const reports = fm.reports || [];
+            console.log('field-mapping.reports:', JSON.stringify(reports));
+            if (reports.length === 0) {
+              console.warn('WARN: field-mapping has no "reports" array. Report classes (e.g. Report_triWorkTask) will NOT be in JAR. Re-run Create API to regenerate package with Report classes.');
+            }
             const requiredFiles = [...requiredBase, ...handlers.map(h => 'handlers/' + h + '.java')];
             const optionalReportFiles = reports.map(r => 'reports/' + r + '.java');
 
@@ -317,15 +321,17 @@ jobs:
               fs.writeFileSync('src/main/java/com/konvergex/apigen/handlers/' + h + '.java', content);
             }
 
-            // 5b. Report classes (optional - for GET list; BO.getRecords uses these)
+            // 5b. Report classes (for GET list; BO.getRecords uses these)
             const reports = fm.reports || [];
             fs.mkdirSync('src/main/java/com/konvergex/apigen/reports', { recursive: true });
             for (const reportName of reports) {
               try {
                 const content = await get(prefix + 'reports/' + reportName + '.java', '5b/7 reports');
                 fs.writeFileSync('src/main/java/com/konvergex/apigen/reports/' + reportName + '.java', content);
+                console.log('Downloaded report class:', reportName + '.java');
               } catch (e) {
-                console.warn('Report class not found (optional):', reportName + '.java');
+                console.error('ERROR: Report class download failed for', reportName + '.java', '-', e.message);
+                throw new Error('Report class ' + reportName + ' is in field-mapping but could not be downloaded from R2. Check bucket/prefix and that package was regenerated.');
               }
             }
 
