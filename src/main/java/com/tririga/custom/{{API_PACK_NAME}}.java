@@ -313,22 +313,45 @@ public class {{API_PACK_NAME}} extends BaseServlet {
         }
 
         // Skip apiPack and version segment if present
-        // Versioned paths: /{apiPack}/1.0/worktasks -> skip "{apiPack}" and "1.0", start at "worktasks"
-        // Non-versioned paths: /{apiPack}/worktasks -> skip "{apiPack}", start at "worktasks"
-        // Note: Version format is "1.0" (no "v" prefix), but we also support "v1.0" for backward compatibility
+        // Case 1: pathInfo = /{{API_PACK_NAME}}/1.0/worktasks (full path) -> skip apiPack and version
+        // Case 2: pathInfo = /1.0/worktasks (apiPack in servlet mapping) -> skip version only
+        // Case 3: pathInfo = /html/en/default/rest/{{API_PACK_NAME}}/1.0/worktasks (with context) -> find apiPack/version, skip to resource
+        // Version format: "1.0" or "v1.0" or "1"
         int startIndex = 0;
         if (pathParts.length > 0) {
-            // Check if first segment matches apiPack (e.g., "{{API_PACK_NAME}}")
-            if (pathParts[0].equals(apiPack)) {
+            if (pathParts[0].equalsIgnoreCase(apiPack)) {
                 startIndex = 1;
-                // Check if next segment is a version (starts with "v" or matches "X.Y" pattern)
                 if (startIndex < pathParts.length) {
                     String nextSegment = pathParts[startIndex];
-                    // Check if it's a version: starts with "v" followed by digits, or matches "X.Y" pattern
-                    // Supports both "1.0" and "v1.0" formats for backward compatibility
                     if (nextSegment.startsWith("v") || 
                         (nextSegment.matches("\\d+\\.\\d+.*") || nextSegment.matches("\\d+"))) {
-                        startIndex++; // Skip version segment
+                        startIndex++;
+                    }
+                }
+            } else if (pathParts[0].startsWith("v") || 
+                (pathParts[0].matches("\\d+\\.\\d+.*") || pathParts[0].matches("\\d+"))) {
+                // Leading version: apiPack is in servlet path (e.g. /{{API_PACK_NAME}}/*), pathInfo = /1.0/worktasks
+                startIndex = 1;
+            } else {
+                // Context prefix (e.g. /html/en/default/rest/{{API_PACK_NAME}}/1.0/worktasks): find apiPack or version
+                for (int i = 0; i < pathParts.length; i++) {
+                    if (pathParts[i].equalsIgnoreCase(apiPack)) {
+                        startIndex = i + 1;
+                        if (startIndex < pathParts.length) {
+                            String nextSegment = pathParts[startIndex];
+                            if (nextSegment.startsWith("v") || 
+                                (nextSegment.matches("\\d+\\.\\d+.*") || nextSegment.matches("\\d+"))) {
+                                startIndex++;
+                            }
+                        }
+                        break;
+                    }
+                    if (pathParts[i].startsWith("v") || 
+                        (pathParts[i].matches("\\d+\\.\\d+.*") || pathParts[i].matches("\\d+"))) {
+                        if (i + 1 < pathParts.length) {
+                            startIndex = i + 1;
+                            break;
+                        }
                     }
                 }
             }
