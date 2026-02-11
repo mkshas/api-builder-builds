@@ -21,7 +21,6 @@ dependencies {
     compileOnly files('lib/org.apache.log4j-1.2.13.v200706111418.jar')
     
     // TRIRIGA Platform dependencies (provided by TRIRIGA runtime, but needed for compilation)
-    compileOnly files('lib/ibm-tririga.jar')
     compileOnly files('lib/TririgaBusinessConnect.jar')
     compileOnly files('lib/TririgaCustomTask.jar')
     compileOnly files('lib/TRIRIGAIntegration.jar')
@@ -44,6 +43,9 @@ sourceSets {
     main {
         java {
             srcDirs = ['src/main/java']
+            // Exclude report upload / doc servlets - not part of generated API; need commons-fileupload
+            exclude '**/KVXTririgaReportUpload.java'
+            exclude '**/OpenAPIDocServlet.java'
         }
         resources {
             srcDirs = ['src/main/resources']
@@ -96,7 +98,6 @@ task copyDependencies(type: Copy) {
     into "$buildDir/libs/dependencies"
     include '*.jar'
     // Exclude TRIRIGA platform JARs (provided by runtime)
-    exclude 'ibm-tririga.jar'
     exclude 'Tririga*.jar'
     exclude 'TRIRIGAIntegration.jar'
     exclude 'javax.servlet-api*.jar'

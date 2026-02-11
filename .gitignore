@@ -4,6 +4,8 @@ build/
 *.jar
 !lib/*.jar
 !gradle/wrapper/gradle-wrapper.jar
+# ibm-tririga.jar (62MB) - not needed; TririgaBusinessConnect.jar has TririgaWS & DTOs
+lib/ibm-tririga.jar
 
 # IDE
 .idea/
