@@ -51,6 +51,7 @@ jobs:
       - name: Set R2 bucket (preview vs production)
         id: bucket
         run: |
+          echo "Bucket sources: var=$([ -n \"$R2_BUCKET_NAME_VAR\" ] && echo 'set' || echo 'empty') base=$([ -n \"$R2_BUCKET_BASE\" ] && echo 'set' || echo 'empty') fallback=$([ -n \"$R2_BUCKET_NAME_FALLBACK\" ] && echo 'set' || echo 'empty') usePreviewBucket=$USE_PREVIEW_BUCKET"
           if [ -n "$R2_BUCKET_NAME_VAR" ]; then
             BUCKET="$R2_BUCKET_NAME_VAR"
             MODE="variable"
@@ -59,9 +60,17 @@ jobs:
             [ "$USE_PREVIEW_BUCKET" = "true" ] && SUFFIX="-preview"
             BUCKET="${R2_BUCKET_BASE}${SUFFIX}"
             MODE="$([ "$USE_PREVIEW_BUCKET" = "true" ] && echo 'preview' || echo 'production')"
-          else
+          elif [ -n "$R2_BUCKET_NAME_FALLBACK" ]; then
             BUCKET="$R2_BUCKET_NAME_FALLBACK"
             MODE="secret"
+          else
+            echo "::error title=R2 bucket not configured::Set R2_BUCKET_NAME (variable) or R2_BUCKET_BASE (secret) or R2_BUCKET_NAME (secret). Repo: Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          if [ "$USE_PREVIEW_BUCKET" = "true" ] && ! echo "$BUCKET" | grep -q -- '-preview$'; then
+            BUCKET="${BUCKET}-preview"
+            MODE="preview (suffix applied)"
+            echo "Applied -preview suffix (usePreviewBucket=true)"
           fi
           echo "R2_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
           echo "bucket_mode=$MODE" >> $GITHUB_OUTPUT
@@ -109,6 +118,13 @@ jobs:
           console.log('Prefix:', prefix);
           console.log('definitionId:', definitionId);
           console.log('');
+
+          if (!bucket || bucket.trim() === '') {
+            console.error('ERROR: R2_BUCKET_NAME is empty. Set it in repo Settings > Secrets and variables > Actions > Variables.');
+            console.error('Variable name must be: R2_BUCKET_NAME');
+            console.error('Value: api-bldr-data-cache-r2 (prod) or api-bldr-data-cache-r2-preview (local)');
+            process.exit(1);
+          }
 
           (async () => {
             // 1. List all objects under prefix
