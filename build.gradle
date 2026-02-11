@@ -1,0 +1,155 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.konvergex.apigen'
+version = '{{VERSION}}'
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+dependencies {
+    // JSON processing (required at runtime - TRIRIGA doesn't provide org.json package)
+    // Note: ExpressAPI-API doesn't bundle it, but it must be uploaded separately
+    implementation files('lib/json-20231013.jar')
+    
+    // Logging (provided by TRIRIGA runtime, but needed for compilation)
+    // TRIRIGA provides log4j - ExpressAPI-API doesn't bundle log4j.jar
+    compileOnly files('lib/org.apache.log4j-1.2.13.v200706111418.jar')
+    
+    // TRIRIGA Platform dependencies (provided by TRIRIGA runtime, but needed for compilation)
+    compileOnly files('lib/ibm-tririga.jar')
+    compileOnly files('lib/TririgaBusinessConnect.jar')
+    compileOnly files('lib/TririgaCustomTask.jar')
+    compileOnly files('lib/TRIRIGAIntegration.jar')
+    
+    // Servlet API and related (provided by TRIRIGA runtime, but needed for compilation)
+    compileOnly files('lib/javax.servlet-api-3.0.1.jar')
+    compileOnly files('lib/javax.ws.rs-api-2.1.1.jar')
+    compileOnly files('lib/javax.mail-1.6.2.jar')
+    
+    // Java Activation Framework (javax.activation) - required for DataHandler
+    // Provided by TRIRIGA runtime at runtime, but needed for compilation
+    // Using Maven Central dependency since it's not bundled in Java 8+
+    compileOnly 'javax.activation:activation:1.1.1'
+    
+    // Note: Report functionality is self-contained via ReportHelper class
+    // No dependencies on ExpressConnect or ExpressAPI packages
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+        resources {
+            srcDirs = ['src/main/resources']
+        }
+    }
+}
+
+// Compile options
+compileJava {
+    sourceCompatibility = '1.8'
+    targetCompatibility = '1.8'
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    // Version format: major.minor.bug (e.g., 1.0.0)
+    // archiveBaseName and archiveVersion are set separately to avoid duplication
+    archiveBaseName = '{{API_PACK_NAME}}-api'
+    archiveVersion = '{{VERSION}}'
+    
+    manifest {
+        attributes(
+            'Implementation-Title': '{{API_PACK_NAME}} API',
+            'Implementation-Version': '{{VERSION}}',
+            'Main-Class': 'com.tririga.custom.{{API_PACK_NAME}}'
+        )
+    }
+    
+    // Thin JAR - only compiled classes, no dependencies
+    // Dependencies are uploaded separately as ResourceFile records
+    
+    doLast {
+        def jarFile = archiveFile.get().asFile
+        def jarSize = jarFile.length()
+        println ""
+        println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        println "✓ JAR file created successfully"
+        println "  Location: " + jarFile.absolutePath
+        println "  Size: " + String.format('%,d', jarSize) + " bytes"
+        println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        println ""
+    }
+}
+
+// Task to copy runtime dependencies to build/libs/dependencies/
+// These dependencies will be uploaded separately to TRIRIGA
+// Only dependencies NOT provided by TRIRIGA runtime should be copied
+task copyDependencies(type: Copy) {
+    from configurations.runtimeClasspath
+    into "$buildDir/libs/dependencies"
+    include '*.jar'
+    // Exclude TRIRIGA platform JARs (provided by runtime)
+    exclude 'ibm-tririga.jar'
+    exclude 'Tririga*.jar'
+    exclude 'TRIRIGAIntegration.jar'
+    exclude 'javax.servlet-api*.jar'
+    exclude 'javax.ws.rs-api*.jar'
+    exclude 'javax.mail*.jar'
+    // Exclude log4j (provided by TRIRIGA runtime - ExpressAPI-API doesn't bundle it)
+    exclude 'log4j*.jar'
+    exclude 'org.apache.log4j*.jar'
+    // Note: json-20231013.jar MUST be included - TRIRIGA doesn't provide org.json package
+    
+    doLast {
+        def dependenciesDir = file("$buildDir/libs/dependencies")
+        def dependencyFiles = fileTree(dependenciesDir).include('*.jar').files
+        if (dependencyFiles.size() > 0) {
+            println ""
+            println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            println "✓ Runtime dependencies copied"
+            println "  Location: " + dependenciesDir.absolutePath
+            println "  Files:"
+            dependencyFiles.each { depFile ->
+                def fileSize = String.format('%,d', depFile.length())
+                println "    - " + depFile.name + " (" + fileSize + " bytes)"
+            }
+            println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            println ""
+        } else {
+            println ""
+            println "⚠ No runtime dependencies to copy (all dependencies provided by TRIRIGA runtime)"
+            println ""
+        }
+    }
+}
+
+tasks.named('build') {
+    dependsOn jar
+    dependsOn copyDependencies
+    
+    doLast {
+        def jarFile = jar.archiveFile.get().asFile
+        def depsDir = file("$buildDir/libs/dependencies")
+        println ""
+        println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        println "✅ BUILD SUCCESSFUL"
+        println ""
+        println "📦 Build Outputs:"
+        println "   JAR: " + jarFile.absolutePath
+        println "   Dependencies: " + depsDir.absolutePath
+        println ""
+        println "📋 Next Steps:"
+        println "   1. Deploy the JAR file to TRIRIGA as a Custom Class"
+        println "   2. Upload runtime dependencies (if any) as ResourceFile records"
+        println "   3. Configure the API endpoint in TRIRIGA"
+        println "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        println ""
+    }
+}

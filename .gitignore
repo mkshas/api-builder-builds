@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+*.jar
+!lib/*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated
+generated/
+*.class
+
+# Logs
+*.log
+
+# Template placeholders (should not be committed)
+src/main/java/com/tririga/custom/{{API_PACK_NAME_CAMEL}}Servlet.java
+src/main/java/io/mobilekraft/apigen/handlers/{{RESOURCE_CAMEL}}Handler.java
