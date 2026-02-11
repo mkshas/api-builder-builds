@@ -197,7 +197,9 @@ jobs:
             const fmRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: baseKey }));
             const fm = JSON.parse(await fmRes.Body.transformToString());
             const handlers = fm.handlers || [];
+            const reports = fm.reports || [];
             const requiredFiles = [...requiredBase, ...handlers.map(h => 'handlers/' + h + '.java')];
+            const optionalReportFiles = reports.map(r => 'reports/' + r + '.java');
 
             const missing = [];
             for (const f of requiredFiles) {
@@ -219,6 +221,9 @@ jobs:
             }
 
             console.log('All required files verified:', requiredFiles.join(', '));
+            if (optionalReportFiles.length > 0) {
+              console.log('Optional Report classes:', optionalReportFiles.join(', '));
+            }
           })();
           "
         env:
@@ -281,7 +286,7 @@ jobs:
 
           (async () => {
             // 1. field-mapping.json
-            const fm = JSON.parse(await get(prefix + 'field-mapping.json', '1/6'));
+            const fm = JSON.parse(await get(prefix + 'field-mapping.json', '1/7'));
             const apiPack = (fm.apiPack || 'api').toLowerCase();
             const version = fm.version || '1.0';
             const handlers = fm.handlers || [];
@@ -292,7 +297,7 @@ jobs:
             fs.writeFileSync('/tmp/handlers.json', JSON.stringify(handlers));
 
             // 2. servlet
-            const servlet = await get(prefix + 'servlet.java', '2/6');
+            const servlet = await get(prefix + 'servlet.java', '2/7');
             const servletPath = 'src/main/java/com/tririga/custom/' + apiPack + '.java';
             fs.mkdirSync(path.dirname(servletPath), { recursive: true });
             fs.writeFileSync(servletPath, servlet);
@@ -301,19 +306,31 @@ jobs:
             try { fs.unlinkSync('src/main/java/com/tririga/custom/{{API_PACK_NAME}}.java'); } catch (_) {}
 
             // 4. FieldMapper
-            const fieldMapper = await get(prefix + 'FieldMapper.java', '4/6');
+            const fieldMapper = await get(prefix + 'FieldMapper.java', '4/7');
             fs.mkdirSync('src/main/java/com/konvergex/apigen/common', { recursive: true });
             fs.writeFileSync('src/main/java/com/konvergex/apigen/common/FieldMapper.java', fieldMapper);
 
             // 5. Handlers
             fs.mkdirSync('src/main/java/com/konvergex/apigen/handlers', { recursive: true });
             for (const h of handlers) {
-              const content = await get(prefix + 'handlers/' + h + '.java', '5/6 handlers');
+              const content = await get(prefix + 'handlers/' + h + '.java', '5/7 handlers');
               fs.writeFileSync('src/main/java/com/konvergex/apigen/handlers/' + h + '.java', content);
             }
 
+            // 5b. Report classes (optional - for GET list; BO.getRecords uses these)
+            const reports = fm.reports || [];
+            fs.mkdirSync('src/main/java/com/konvergex/apigen/reports', { recursive: true });
+            for (const reportName of reports) {
+              try {
+                const content = await get(prefix + 'reports/' + reportName + '.java', '5b/7 reports');
+                fs.writeFileSync('src/main/java/com/konvergex/apigen/reports/' + reportName + '.java', content);
+              } catch (e) {
+                console.warn('Report class not found (optional):', reportName + '.java');
+              }
+            }
+
             // 6. openapi.json - for /doc and /openapi.json endpoints (servlet reads from classpath)
-            const openapi = await get(prefix + 'openapi.json', '6/6');
+            const openapi = await get(prefix + 'openapi.json', '6/7');
             fs.mkdirSync('src/main/resources', { recursive: true });
             fs.writeFileSync('src/main/resources/openapi.json', openapi);
 
