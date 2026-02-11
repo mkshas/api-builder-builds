@@ -77,11 +77,24 @@ jobs:
           echo "definition_id=${{ inputs.definitionId }}" >> $GITHUB_OUTPUT
           echo "::notice title=R2 config::Bucket=$BUCKET, mode=$MODE, definitionId=${{ inputs.definitionId }}"
           echo "Bucket: $BUCKET (mode=$MODE)"
+          if [ "$USE_PREVIEW_BUCKET" = "true" ] && [ -n "$R2_ACCESS_KEY_ID_PREVIEW" ]; then
+            echo "R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID_PREVIEW" >> $GITHUB_ENV
+            echo "R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY_PREVIEW" >> $GITHUB_ENV
+            echo "Using R2 credentials: preview (dev token)"
+          else
+            echo "R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID_PROD" >> $GITHUB_ENV
+            echo "R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY_PROD" >> $GITHUB_ENV
+            echo "Using R2 credentials: production (or fallback when preview not set)"
+          fi
         env:
           R2_BUCKET_BASE: ${{ secrets.R2_BUCKET_BASE }}
           R2_BUCKET_NAME_VAR: ${{ vars.R2_BUCKET_NAME }}
           R2_BUCKET_NAME_FALLBACK: ${{ secrets.R2_BUCKET_NAME }}
           USE_PREVIEW_BUCKET: ${{ inputs.usePreviewBucket }}
+          R2_ACCESS_KEY_ID_PREVIEW: ${{ secrets.R2_ACCESS_KEY_ID_PREVIEW }}
+          R2_SECRET_ACCESS_KEY_PREVIEW: ${{ secrets.R2_SECRET_ACCESS_KEY_PREVIEW }}
+          R2_ACCESS_KEY_ID_PROD: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY_PROD: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
       - name: List and verify package in R2
         run: |
@@ -210,8 +223,6 @@ jobs:
           "
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
       - name: Download package files from R2
         id: download
@@ -357,8 +368,6 @@ jobs:
           "
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
       - name: Upload build logs
         if: always()
@@ -395,8 +404,6 @@ jobs:
           "
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
       - name: Notify Cloudflare (if callback provided)
         if: always() && inputs.callbackUrl != ''

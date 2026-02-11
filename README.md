@@ -28,8 +28,10 @@ The `build-jar.yml` workflow is triggered via GitHub API (workflow_dispatch) wit
 
 Configure these secrets in the repository settings:
 
-- `R2_ACCESS_KEY_ID`: R2 Access Key
-- `R2_SECRET_ACCESS_KEY`: R2 Secret Key
+- `R2_ACCESS_KEY_ID`: R2 Access Key (production bucket)
+- `R2_SECRET_ACCESS_KEY`: R2 Secret Key (production bucket)
+- `R2_ACCESS_KEY_ID_PREVIEW`: R2 Access Key for preview bucket (optional; when set, used when usePreviewBucket=true)
+- `R2_SECRET_ACCESS_KEY_PREVIEW`: R2 Secret Key for preview bucket (optional; use with R2_ACCESS_KEY_ID_PREVIEW)
 - `R2_ENDPOINT`: R2 Endpoint URL (e.g., `https://<account-id>.r2.cloudflarestorage.com`)
 - **Bucket** (pick one; required):
   - `R2_BUCKET_NAME` (variable, recommended): Repo **Settings > Secrets and variables > Actions > Variables**. Add variable `R2_BUCKET_NAME` = `api-bldr-data-cache-r2` (prod) or `api-bldr-data-cache-r2-preview` (local).
