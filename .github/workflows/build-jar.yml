@@ -11,10 +11,6 @@ on:
         description: 'API Definition ID'
         required: true
         type: string
-      sourceR2Key:
-        description: 'R2 key for source ZIP'
-        required: true
-        type: string
       callbackUrl:
         description: 'Cloudflare callback URL (optional)'
         required: false
@@ -28,7 +24,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,52 +40,95 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install R2 upload script dependencies
-        run: |
-          npm install @aws-sdk/client-s3
+      - name: Install R2 script dependencies
+        run: npm install @aws-sdk/client-s3
 
-      - name: Download source ZIP from R2
+      - name: Download package files from R2
+        id: download
         run: |
-          # Use AWS SDK configured for R2 (no AWS account needed)
-          # R2 is S3-compatible, so we use S3 SDK pointing to R2 endpoint
           node -e "
           const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
           const fs = require('fs');
+          const path = require('path');
+
           const client = new S3Client({
             region: 'auto',
-            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            endpoint: process.env.R2_ENDPOINT,
             credentials: {
-              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
-              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+              accessKeyId: process.env.R2_ACCESS_KEY_ID,
+              secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
             }
           });
-          const command = new GetObjectCommand({
-            Bucket: '${{ secrets.R2_BUCKET_NAME }}',
-            Key: '${{ inputs.sourceR2Key }}'
-          });
-          client.send(command).then((response) => {
-            const stream = response.Body;
-            const file = fs.createWriteStream('/tmp/source.zip');
-            stream.pipe(file);
-            file.on('finish', () => file.close());
-          });
-          "
 
-      - name: Extract source files
+          const bucket = process.env.R2_BUCKET_NAME;
+          const definitionId = '${{ inputs.definitionId }}';
+          const prefix = 'packages/' + definitionId + '/';
+
+          async function get(key) {
+            try {
+              const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+              const res = await client.send(cmd);
+              return await res.Body.transformToString();
+            } catch (e) {
+              throw new Error('Failed to get ' + key + ': ' + e.message);
+            }
+          }
+
+          (async () => {
+            // 1. field-mapping.json
+            const fm = JSON.parse(await get(prefix + 'field-mapping.json'));
+            const apiPack = (fm.apiPack || 'api').toLowerCase();
+            const version = fm.version || '1.0';
+            const handlers = fm.handlers || [];
+
+            fs.writeFileSync('/tmp/field-mapping.json', JSON.stringify(fm));
+            fs.writeFileSync('/tmp/api-pack.txt', apiPack);
+            fs.writeFileSync('/tmp/version.txt', version);
+            fs.writeFileSync('/tmp/handlers.json', JSON.stringify(handlers));
+
+            // 2. servlet
+            const servlet = await get(prefix + 'servlet.java');
+            const servletPath = 'src/main/java/com/tririga/custom/' + apiPack + '.java';
+            fs.mkdirSync(path.dirname(servletPath), { recursive: true });
+            fs.writeFileSync(servletPath, servlet);
+
+            // 3. Remove template placeholder
+            try { fs.unlinkSync('src/main/java/com/tririga/custom/{{API_PACK_NAME}}.java'); } catch (_) {}
+
+            // 4. FieldMapper
+            const fieldMapper = await get(prefix + 'FieldMapper.java');
+            fs.mkdirSync('src/main/java/com/konvergex/apigen/common', { recursive: true });
+            fs.writeFileSync('src/main/java/com/konvergex/apigen/common/FieldMapper.java', fieldMapper);
+
+            // 5. Handlers
+            fs.mkdirSync('src/main/java/com/konvergex/apigen/handlers', { recursive: true });
+            for (const h of handlers) {
+              const content = await get(prefix + 'handlers/' + h + '.java');
+              fs.writeFileSync('src/main/java/com/konvergex/apigen/handlers/' + h + '.java', content);
+            }
+
+            console.log('Downloaded package files');
+          })();
+          "
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+      - name: Replace placeholders in build files
         run: |
-          unzip -q /tmp/source.zip -d /tmp/build
-          cd /tmp/build
-          chmod +x gradlew
+          API_PACK=$(cat /tmp/api-pack.txt)
+          VERSION=$(cat /tmp/version.txt)
+          sed -i "s/{{API_PACK_NAME}}/$API_PACK/g" build.gradle
+          sed -i "s/{{VERSION}}/$VERSION/g" build.gradle
+          sed -i "s/{{API_PACK_NAME}}/$API_PACK/g" settings.gradle
 
       - name: Build with Gradle
-        working-directory: /tmp/build
-        run: |
-          ./gradlew build --no-daemon --stacktrace
-        continue-on-error: false
+        run: ./gradlew build --no-daemon --stacktrace
 
       - name: Find generated JAR
         id: find-jar
-        working-directory: /tmp/build
         run: |
           JAR_FILE=$(find build/libs -name "*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
           echo "jar_path=$JAR_FILE" >> $GITHUB_OUTPUT
@@ -97,34 +136,32 @@ jobs:
 
       - name: Upload JAR to R2
         run: |
-          # Upload JAR to R2 using AWS SDK configured for R2
-          # No AWS account needed - R2 is S3-compatible
           node -e "
           const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
           const fs = require('fs');
           const client = new S3Client({
             region: 'auto',
-            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            endpoint: process.env.R2_ENDPOINT,
             credentials: {
-              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
-              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+              accessKeyId: process.env.R2_ACCESS_KEY_ID,
+              secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
             }
           });
           const jarPath = '${{ steps.find-jar.outputs.jar_path }}';
           const jarData = fs.readFileSync(jarPath);
           const command = new PutObjectCommand({
-            Bucket: '${{ secrets.R2_BUCKET_NAME }}',
+            Bucket: process.env.R2_BUCKET_NAME,
             Key: 'jars/${{ inputs.definitionId }}/${{ github.run_id }}_${{ steps.find-jar.outputs.jar_name }}',
             Body: jarData,
             ContentType: 'application/java-archive'
           });
-          client.send(command).then(() => {
-            console.log('JAR uploaded successfully');
-          }).catch((err) => {
-            console.error('Upload failed:', err);
-            process.exit(1);
-          });
+          client.send(command).then(() => console.log('JAR uploaded')).catch(e => { console.error(e); process.exit(1); });
           "
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
       - name: Upload build logs
         if: always()
@@ -134,17 +171,16 @@ jobs:
           echo "${{ github.run_number }}" > /tmp/logs/run_number.txt
           echo "${{ github.workflow }}" > /tmp/logs/workflow.txt
           echo "${{ github.repository }}" > /tmp/logs/repository.txt
-          
-          # Upload logs to R2 using AWS SDK (no AWS account needed)
+
           node -e "
           const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
           const fs = require('fs');
           const client = new S3Client({
             region: 'auto',
-            endpoint: '${{ secrets.R2_ENDPOINT }}',
+            endpoint: process.env.R2_ENDPOINT,
             credentials: {
-              accessKeyId: '${{ secrets.R2_ACCESS_KEY_ID }}',
-              secretAccessKey: '${{ secrets.R2_SECRET_ACCESS_KEY }}'
+              accessKeyId: process.env.R2_ACCESS_KEY_ID,
+              secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
             }
           });
           const files = ['run_id.txt', 'run_number.txt', 'workflow.txt', 'repository.txt'];
@@ -152,15 +188,19 @@ jobs:
             const filePath = '/tmp/logs/' + filename;
             if (fs.existsSync(filePath)) {
               const data = fs.readFileSync(filePath);
-              const command = new PutObjectCommand({
-                Bucket: '${{ secrets.R2_BUCKET_NAME }}',
+              return client.send(new PutObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
                 Key: 'build-logs/${{ inputs.jobId }}/' + filename,
                 Body: data
-              });
-              return client.send(command);
+              }));
             }
           })).then(() => console.log('Logs uploaded'));
           "
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
       - name: Notify Cloudflare (if callback provided)
         if: always() && inputs.callbackUrl != ''
@@ -171,7 +211,10 @@ jobs:
           else
             STATUS="failed"
           fi
-          
+
+          JAR_NAME="${{ steps.find-jar.outputs.jar_name }}"
+          [ -z "$JAR_NAME" ] && JAR_NAME="unknown.jar"
+
           curl -X POST "${{ inputs.callbackUrl }}" \
             -H "Authorization: Bearer ${{ inputs.callbackToken }}" \
             -H "Content-Type: application/json" \
@@ -180,6 +223,6 @@ jobs:
               \"status\": \"$STATUS\",
               \"runId\": \"${{ github.run_id }}\",
               \"runNumber\": \"${{ github.run_number }}\",
-              \"jarR2Key\": \"jars/${{ inputs.definitionId }}/${{ github.run_id }}_${{ steps.find-jar.outputs.jar_name }}\",
+              \"jarR2Key\": \"jars/${{ inputs.definitionId }}/${{ github.run_id }}_$JAR_NAME\",
               \"workflowUrl\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
