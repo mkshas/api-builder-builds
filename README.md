@@ -5,10 +5,12 @@ GitHub Actions repository for building Java JAR files from API definitions store
 ## Overview
 
 This repository contains a GitHub Actions workflow that:
-1. Downloads source code ZIP files from Cloudflare R2
-2. Builds Java projects using Gradle
-3. Uploads compiled JAR files back to R2
-4. Optionally notifies Cloudflare Workers via webhook callback
+
+1. **Checkout** – Uses the Gradle template in this repo (build.gradle, gradlew, lib/, common Java classes)
+2. **Download** – Fetches generated package files from R2 (`packages/{definitionId}/`)
+3. **Build** – Replaces placeholders, compiles with Gradle, produces JAR
+4. **Upload** – Uploads JAR to R2 (`jars/{definitionId}/{runId}_{jarName}`)
+5. **Callback** – Optionally notifies Cloudflare Workers when build completes
 
 ## Workflow
 
@@ -16,7 +18,7 @@ The `build-jar.yml` workflow is triggered via GitHub API (workflow_dispatch) wit
 
 - `jobId`: Build job ID
 - `definitionId`: API Definition ID
-- `sourceR2Key`: R2 key for source ZIP file
+- `usePreviewBucket`: Use preview R2 bucket (set automatically by API Builder when running locally)
 - `callbackUrl`: Cloudflare callback URL (optional)
 - `callbackToken`: Callback authentication token (optional)
 
@@ -26,30 +28,32 @@ The `build-jar.yml` workflow is triggered via GitHub API (workflow_dispatch) wit
 
 Configure these secrets in the repository settings:
 
-- `R2_ACCOUNT_ID`: Cloudflare R2 Account ID
 - `R2_ACCESS_KEY_ID`: R2 Access Key
 - `R2_SECRET_ACCESS_KEY`: R2 Secret Key
 - `R2_ENDPOINT`: R2 Endpoint URL (e.g., `https://<account-id>.r2.cloudflarestorage.com`)
-- `R2_BUCKET_NAME`: R2 Bucket name
+- **Bucket** (pick one):
+  - `R2_BUCKET_BASE`: Base bucket name `api-bldr-data-cache-r2` (recommended; workflow auto-adds `-preview` when triggered from local API Builder)
+  - `R2_BUCKET_NAME`: Full bucket name (legacy; you must manually switch for local vs production)
 - `CLOUDFLARE_CALLBACK_TOKEN`: Token for webhook callbacks (optional)
 - `CLOUDFLARE_CALLBACK_URL`: Webhook URL (optional)
 
-### How It Works
+### R2 Package Layout
 
-1. **Source Download**: Workflow downloads source ZIP from R2 using S3-compatible API
-2. **Build**: Extracts ZIP, sets up Java/Gradle environment, and builds the JAR
-3. **Upload**: Uploads compiled JAR back to R2
-4. **Logs**: Uploads build metadata to R2 for reference
-5. **Callback**: Optionally notifies Cloudflare Workers when build completes
+The workflow expects these files in R2 under `packages/{definitionId}/`:
+
+- `field-mapping.json` – Contains `apiPack`, `version`, `handlers` array
+- `servlet.java` – Main servlet class
+- `FieldMapper.java` – Field mapper class
+- `handlers/{HandlerName}.java` – One file per handler (e.g. `TriWorkTaskHandler.java`)
+- `openapi.json` – OpenAPI spec; packaged into JAR for `/doc` and `/openapi.json` endpoints
 
 ## Usage
 
-This workflow is triggered automatically by Cloudflare Workers via GitHub API. It is not intended to be run manually, though it can be triggered manually from the GitHub Actions UI for testing.
+This workflow is triggered automatically by the API Builder when package generation completes. It can also be triggered manually from the GitHub Actions UI for testing.
 
 ## Notes
 
-- This repository is a **build runner only** - it does not store source code
-- Source code comes from R2 ZIP files
-- Each build runs in an isolated `/tmp/build` directory
-- Multiple builds can run concurrently without conflicts
-- Builds are automatically cleaned up after completion
+- This repository includes the Gradle template (build files, gradlew, lib/, common classes)
+- Generated API-specific files (servlet, FieldMapper, handlers) are downloaded from R2
+- Placeholders in build.gradle and settings.gradle are replaced at runtime
+- Builds run in the repo root; output JAR is uploaded to R2

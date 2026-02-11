@@ -11,6 +11,11 @@ on:
         description: 'API Definition ID'
         required: true
         type: string
+      usePreviewBucket:
+        description: 'Use preview R2 bucket (true when API Builder runs locally)'
+        required: false
+        type: boolean
+        default: false
       callbackUrl:
         description: 'Cloudflare callback URL (optional)'
         required: false
@@ -43,6 +48,53 @@ jobs:
       - name: Install R2 script dependencies
         run: npm install @aws-sdk/client-s3
 
+      - name: Set R2 bucket (preview vs production)
+        run: |
+          if [ -n "$R2_BUCKET_BASE" ]; then
+            SUFFIX=""
+            [ "$USE_PREVIEW_BUCKET" = "true" ] && SUFFIX="-preview"
+            BUCKET="${R2_BUCKET_BASE}${SUFFIX}"
+          else
+            BUCKET="$R2_BUCKET_NAME_FALLBACK"
+          fi
+          echo "R2_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
+          echo "Using bucket: $BUCKET"
+        env:
+          R2_BUCKET_BASE: ${{ secrets.R2_BUCKET_BASE }}
+          R2_BUCKET_NAME_FALLBACK: ${{ secrets.R2_BUCKET_NAME }}
+          USE_PREVIEW_BUCKET: ${{ inputs.usePreviewBucket }}
+
+      - name: Check package exists in R2
+        run: |
+          node -e "
+          const { S3Client, HeadObjectCommand } = require('@aws-sdk/client-s3');
+          const client = new S3Client({
+            region: 'auto',
+            endpoint: process.env.R2_ENDPOINT,
+            credentials: {
+              accessKeyId: process.env.R2_ACCESS_KEY_ID,
+              secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
+            }
+          });
+          const key = 'packages/${{ inputs.definitionId }}/field-mapping.json';
+          (async () => {
+            try {
+              await client.send(new HeadObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key }));
+              console.log('Package found in R2');
+            } catch (e) {
+              console.error('Package not found. Run package generation first for this definition.');
+              console.error('Expected: ' + key);
+              console.error('Bucket: ' + process.env.R2_BUCKET_NAME);
+              console.error('Hint: If you used the local API Builder, R2_BUCKET_NAME must be api-bldr-data-cache-r2-preview. For production: api-bldr-data-cache-r2.');
+              process.exit(1);
+            }
+          })();
+          "
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
       - name: Download package files from R2
         id: download
         run: |
@@ -70,7 +122,11 @@ jobs:
               const res = await client.send(cmd);
               return await res.Body.transformToString();
             } catch (e) {
-              throw new Error('Failed to get ' + key + ': ' + e.message);
+              const msg = e.message || '';
+              const hint = msg.includes('does not exist') || msg.includes('NoSuchKey')
+                ? ' Run package generation first, or ensure R2_BUCKET_NAME matches where the API Builder uploaded (api-bldr-data-cache-r2-preview for local, api-bldr-data-cache-r2 for prod).'
+                : '';
+              throw new Error('Failed to get ' + key + ': ' + msg + hint);
             }
           }
 
@@ -107,6 +163,11 @@ jobs:
               fs.writeFileSync('src/main/java/com/konvergex/apigen/handlers/' + h + '.java', content);
             }
 
+            // 6. openapi.json - for /doc and /openapi.json endpoints (servlet reads from classpath)
+            const openapi = await get(prefix + 'openapi.json');
+            fs.mkdirSync('src/main/resources', { recursive: true });
+            fs.writeFileSync('src/main/resources/openapi.json', openapi);
+
             console.log('Downloaded package files');
           })();
           "
@@ -114,7 +175,6 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
       - name: Replace placeholders in build files
         run: |
@@ -161,7 +221,6 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
       - name: Upload build logs
         if: always()
@@ -200,7 +259,6 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
       - name: Notify Cloudflare (if callback provided)
         if: always() && inputs.callbackUrl != ''
