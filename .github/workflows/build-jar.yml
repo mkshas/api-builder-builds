@@ -343,28 +343,74 @@ jobs:
           echo "jar_path=$JAR_FILE" >> $GITHUB_OUTPUT
           echo "jar_name=$(basename $JAR_FILE)" >> $GITHUB_OUTPUT
 
-      - name: Upload JAR to R2
+      - name: Upload JAR and dependencies to R2
+        id: upload-jars
         run: |
           node -e "
-          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-          const fs = require('fs');
-          const client = new S3Client({
-            region: 'auto',
-            endpoint: process.env.R2_ENDPOINT,
-            credentials: {
-              accessKeyId: process.env.R2_ACCESS_KEY_ID,
-              secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
+          (async () => {
+            const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+            const fs = require('fs');
+            const path = require('path');
+            const { execSync } = require('child_process');
+
+            const client = new S3Client({
+              region: 'auto',
+              endpoint: process.env.R2_ENDPOINT,
+              credentials: {
+                accessKeyId: process.env.R2_ACCESS_KEY_ID,
+                secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
+              }
+            });
+
+            const definitionId = '${{ inputs.definitionId }}';
+            const runId = '${{ github.run_id }}';
+            const bucket = process.env.R2_BUCKET_NAME;
+            const jarPath = '${{ steps.find-jar.outputs.jar_path }}';
+            const jarName = '${{ steps.find-jar.outputs.jar_name }}';
+
+            // Upload main JAR
+            const jarData = fs.readFileSync(jarPath);
+            const jarR2Key = 'jars/' + definitionId + '/' + runId + '_' + jarName;
+            await client.send(new PutObjectCommand({
+              Bucket: bucket,
+              Key: jarR2Key,
+              Body: jarData,
+              ContentType: 'application/java-archive'
+            }));
+            console.log('Main JAR uploaded:', jarR2Key);
+
+            // Find and upload dependency JARs (build/libs/dependencies/*.jar)
+            const dependentJarR2Keys = [];
+            let depJars = [];
+            try {
+              depJars = execSync('find build/libs/dependencies -name \"*.jar\" 2>/dev/null', { encoding: 'utf8' })
+                .trim().split('\n').filter(Boolean);
+            } catch (_) {}
+
+            const depsPrefix = 'jars/' + definitionId + '/' + runId + '_deps/';
+            for (const depPath of depJars) {
+              const depName = path.basename(depPath);
+              const depKey = depsPrefix + depName;
+              const depData = fs.readFileSync(depPath);
+              await client.send(new PutObjectCommand({
+                Bucket: bucket,
+                Key: depKey,
+                Body: depData,
+                ContentType: 'application/java-archive'
+              }));
+              dependentJarR2Keys.push(depKey);
+              console.log('Dependency JAR uploaded:', depKey);
             }
-          });
-          const jarPath = '${{ steps.find-jar.outputs.jar_path }}';
-          const jarData = fs.readFileSync(jarPath);
-          const command = new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: 'jars/${{ inputs.definitionId }}/${{ github.run_id }}_${{ steps.find-jar.outputs.jar_name }}',
-            Body: jarData,
-            ContentType: 'application/java-archive'
-          });
-          client.send(command).then(() => console.log('JAR uploaded')).catch(e => { console.error(e); process.exit(1); });
+
+            if (dependentJarR2Keys.length === 0) {
+              console.log('No runtime dependencies to upload (expected: json-20231013.jar from lib/)');
+            }
+
+            fs.appendFileSync(process.env.GITHUB_OUTPUT,
+              'jarR2Key=' + jarR2Key + '\n' +
+              'dependentJarR2Keys=' + JSON.stringify(dependentJarR2Keys) + '\n'
+            );
+          })().catch(e => { console.error(e); process.exit(1); });
           "
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
@@ -415,8 +461,10 @@ jobs:
             STATUS="failed"
           fi
 
-          JAR_NAME="${{ steps.find-jar.outputs.jar_name }}"
-          [ -z "$JAR_NAME" ] && JAR_NAME="unknown.jar"
+          JAR_R2_KEY="${{ steps.upload-jars.outputs.jarR2Key }}"
+          [ -z "$JAR_R2_KEY" ] && JAR_R2_KEY="jars/${{ inputs.definitionId }}/${{ github.run_id }}_unknown.jar"
+          DEP_KEYS="${{ steps.upload-jars.outputs.dependentJarR2Keys }}"
+          [ -z "$DEP_KEYS" ] && DEP_KEYS="[]"
 
           curl -X POST "${{ inputs.callbackUrl }}" \
             -H "Authorization: Bearer ${{ inputs.callbackToken }}" \
@@ -426,6 +474,7 @@ jobs:
               \"status\": \"$STATUS\",
               \"runId\": \"${{ github.run_id }}\",
               \"runNumber\": \"${{ github.run_number }}\",
-              \"jarR2Key\": \"jars/${{ inputs.definitionId }}/${{ github.run_id }}_$JAR_NAME\",
+              \"jarR2Key\": \"$JAR_R2_KEY\",
+              \"dependentJarR2Keys\": $DEP_KEYS,
               \"workflowUrl\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
