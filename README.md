@@ -32,8 +32,8 @@ Configure these secrets in the repository settings:
 - `R2_SECRET_ACCESS_KEY`: R2 Secret Key
 - `R2_ENDPOINT`: R2 Endpoint URL (e.g., `https://<account-id>.r2.cloudflarestorage.com`)
 - **Bucket** (pick one):
-  - `R2_BUCKET_BASE`: Base bucket name `api-bldr-data-cache-r2` (recommended; workflow auto-adds `-preview` when triggered from local API Builder)
-  - `R2_BUCKET_NAME`: Full bucket name (legacy; you must manually switch for local vs production)
+  - `R2_BUCKET_NAME` (variable): Full bucket name e.g. `api-bldr-data-cache-r2` or `api-bldr-data-cache-r2-preview` (repo variable, not secret; actual value shown in logs)
+  - `R2_BUCKET_BASE` (secret): Base name `api-bldr-data-cache-r2`; workflow adds `-preview` when usePreviewBucket=true
 - `CLOUDFLARE_CALLBACK_TOKEN`: Token for webhook callbacks (optional)
 - `CLOUDFLARE_CALLBACK_URL`: Webhook URL (optional)
 

@@ -51,22 +51,26 @@ jobs:
       - name: Set R2 bucket (preview vs production)
         id: bucket
         run: |
-          if [ -n "$R2_BUCKET_BASE" ]; then
+          if [ -n "$R2_BUCKET_NAME_VAR" ]; then
+            BUCKET="$R2_BUCKET_NAME_VAR"
+            MODE="variable"
+          elif [ -n "$R2_BUCKET_BASE" ]; then
             SUFFIX=""
             [ "$USE_PREVIEW_BUCKET" = "true" ] && SUFFIX="-preview"
             BUCKET="${R2_BUCKET_BASE}${SUFFIX}"
             MODE="$([ "$USE_PREVIEW_BUCKET" = "true" ] && echo 'preview' || echo 'production')"
           else
             BUCKET="$R2_BUCKET_NAME_FALLBACK"
-            MODE="custom"
+            MODE="secret"
           fi
           echo "R2_BUCKET_NAME=$BUCKET" >> $GITHUB_ENV
           echo "bucket_mode=$MODE" >> $GITHUB_OUTPUT
           echo "definition_id=${{ inputs.definitionId }}" >> $GITHUB_OUTPUT
-          echo "::notice title=R2 config::Bucket mode=$MODE, definitionId=${{ inputs.definitionId }}, usePreviewBucket=$USE_PREVIEW_BUCKET"
-          echo "Bucket configured. Mode: $MODE (preview=api-bldr-data-cache-r2-preview, production=api-bldr-data-cache-r2)"
+          echo "::notice title=R2 config::Bucket=$BUCKET, mode=$MODE, definitionId=${{ inputs.definitionId }}"
+          echo "Bucket: $BUCKET (mode=$MODE)"
         env:
           R2_BUCKET_BASE: ${{ secrets.R2_BUCKET_BASE }}
+          R2_BUCKET_NAME_VAR: ${{ vars.R2_BUCKET_NAME }}
           R2_BUCKET_NAME_FALLBACK: ${{ secrets.R2_BUCKET_NAME }}
           USE_PREVIEW_BUCKET: ${{ inputs.usePreviewBucket }}
 
@@ -85,14 +89,23 @@ jobs:
           });
 
           const bucket = process.env.R2_BUCKET_NAME;
+          const endpoint = process.env.R2_ENDPOINT || '';
           const definitionId = '${{ inputs.definitionId }}';
           const prefix = 'packages/' + definitionId + '/';
 
+          function buildUrl(operation, key) {
+            const base = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+            if (operation === 'ListObjectsV2') {
+              return base + '/' + bucket + '?list-type=2&prefix=' + encodeURIComponent(prefix);
+            }
+            let k = key || prefix;
+            while (k.startsWith('/')) k = k.slice(1);
+            return base + '/' + bucket + '/' + k;
+          }
+
           console.log('=== R2 diagnostics ===');
-          const ep = process.env.R2_ENDPOINT || '';
-          const epHost = ep ? (ep.split('//')[1] || '').split('/')[0] || 'set' : 'NOT SET';
-          console.log('Endpoint host:', epHost);
-          console.log('Bucket: len=', bucket ? bucket.length : 0, 'preview=', bucket ? bucket.endsWith('-preview') : 'n/a');
+          console.log('Endpoint:', endpoint);
+          console.log('Bucket:', bucket || 'NOT SET');
           console.log('Prefix:', prefix);
           console.log('definitionId:', definitionId);
           console.log('');
@@ -100,6 +113,9 @@ jobs:
           (async () => {
             // 1. List all objects under prefix
             let listed = [];
+            const listUrl = buildUrl('ListObjectsV2');
+            console.log('API: ListObjectsV2');
+            console.log('URL:', listUrl);
             try {
               const list = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: 100 }));
               listed = (list.Contents || []).map(o => o.Key).filter(Boolean);
@@ -126,6 +142,9 @@ jobs:
             const requiredBase = ['field-mapping.json', 'servlet.java', 'FieldMapper.java', 'openapi.json'];
             const baseKey = prefix + 'field-mapping.json';
 
+            console.log('');
+            console.log('API: HeadObject field-mapping.json');
+            console.log('URL:', buildUrl('GetObject', baseKey));
             let headErr = null;
             try {
               await client.send(new HeadObjectCommand({ Bucket: bucket, Key: baseKey }));
@@ -143,6 +162,9 @@ jobs:
             }
 
             // 3. Fetch field-mapping to get handlers, then verify all required files exist
+            console.log('');
+            console.log('API: GetObject field-mapping.json');
+            console.log('URL:', buildUrl('GetObject', baseKey));
             const fmRes = await client.send(new GetObjectCommand({ Bucket: bucket, Key: baseKey }));
             const fm = JSON.parse(await fmRes.Body.transformToString());
             const handlers = fm.handlers || [];
@@ -183,20 +205,33 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
+          const endpoint = process.env.R2_ENDPOINT || '';
+          const bucket = process.env.R2_BUCKET_NAME;
+
           const client = new S3Client({
             region: 'auto',
-            endpoint: process.env.R2_ENDPOINT,
+            endpoint: endpoint,
             credentials: {
               accessKeyId: process.env.R2_ACCESS_KEY_ID,
               secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
             }
           });
 
-          const bucket = process.env.R2_BUCKET_NAME;
+          function buildUrl(key) {
+            const base = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+            let k = key;
+            while (k.startsWith('/')) k = k.slice(1);
+            return base + '/' + bucket + '/' + k;
+          }
+
+          console.log('Bucket:', bucket);
+          console.log('Endpoint:', endpoint);
           const definitionId = '${{ inputs.definitionId }}';
           const prefix = 'packages/' + definitionId + '/';
 
           async function get(key, step) {
+            const url = buildUrl(key);
+            console.log('GetObject', step + ':', url);
             try {
               const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
               const res = await client.send(cmd);
@@ -205,12 +240,13 @@ jobs:
               console.error('');
               console.error('=== Download FAILED ===');
               console.error('File:', key);
+              console.error('URL:', url);
               console.error('Step:', step);
               console.error('API: GetObject');
               console.error('Error:', e.name, e.message);
               console.error('Code:', e.\$metadata?.httpStatusCode || e.Code);
               if (e.Code) console.error('AWS Code:', e.Code);
-              console.error('Bucket:', bucket ? '(configured)' : 'NOT SET');
+              console.error('Bucket:', bucket || 'NOT SET');
               console.error('');
               throw e;
             }
