@@ -298,8 +298,11 @@ public class {{API_PACK_NAME}} extends BaseServlet {
      */
     private RouteContext parseRouteWithTririga(String pathInfo, Map<String, String> queryParams, TririgaWS tririga) {
         if (pathInfo == null || pathInfo.isEmpty()) {
+            logger.debug("parseRoute: pathInfo is null or empty");
             return null;
         }
+
+        logger.debug("parseRoute: pathInfo=\"" + pathInfo + "\" API_PACK=\"" + API_PACK + "\"");
 
         // Use hardcoded API pack (no JSON dependency)
         String apiPack = API_PACK;
@@ -312,8 +315,10 @@ public class {{API_PACK_NAME}} extends BaseServlet {
             if (p != null && !p.isEmpty()) nonEmpty.add(p);
         }
         String[] pathParts = nonEmpty.toArray(new String[0]);
+        logger.debug("parseRoute: pathParts=[" + String.join(", ", pathParts) + "] (length=" + pathParts.length + ")");
         
         if (pathParts.length == 0) {
+            logger.debug("parseRoute: no path segments after filter");
             return null;
         }
 
@@ -368,8 +373,10 @@ public class {{API_PACK_NAME}} extends BaseServlet {
             System.arraycopy(pathParts, startIndex, adjustedParts, 0, adjustedParts.length);
             pathParts = adjustedParts;
         }
+        logger.debug("parseRoute: startIndex=" + startIndex + " resourcePathParts=[" + String.join(", ", pathParts) + "] expectedRoutes=[" + "worktasks" + "]");
         
         if (pathParts.length == 0) {
+            logger.debug("parseRoute: no segments left after skipping apiPack/version");
             return null;
         }
 
@@ -418,6 +425,7 @@ public class {{API_PACK_NAME}} extends BaseServlet {
             logger.error("Error parsing route: " + pathInfo, e);
         }
 
+        logger.info("parseRoute: 404 no match pathParts[0]=\"" + (pathParts.length > 0 ? pathParts[0] : "") + "\" expected=[" + "worktasks" + "] pathInfo=\"" + pathInfo + "\"");
         return null;
     }
 
