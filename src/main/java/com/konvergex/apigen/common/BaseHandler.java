@@ -177,28 +177,29 @@ public abstract class BaseHandler {
                 associationName = determineAssociationName(parentIdParam);
             }
             
-            // Map exposed field names to TRIRIGA field names
-            IntegrationField[] fields = fieldMapper.mapToTririgaFields(body);
-            
+            // Map exposed field names to TRIRIGA field names, grouped by section
+            // TRIRIGA requires RecordInformation fields (e.g. triCurrencyUO) in IntegrationSection("RecordInformation")
+            java.util.Map<String, IntegrationField[]> sectionToFields = fieldMapper.mapToTririgaFieldsBySection(body);
+
             // Get object type ID
             Long objectTypeId = tririga.getObjectTypeId(
-                queryBuilder.getModule(), 
+                queryBuilder.getModule(),
                 queryBuilder.getBusinessObject()
             );
-            
+
             // Create record using BO helper (with association if parentId provided)
             String recordId;
             if (parentId != null && !parentId.isEmpty() && associationName != null) {
                 try {
                     Long parentRecordId = Long.parseLong(parentId);
-                    recordId = BO.createRecord(tririga, objectTypeId, fields, parentId, associationName);
+                    recordId = BO.createRecord(tririga, objectTypeId, sectionToFields, parentId, associationName);
                 } catch (NumberFormatException e) {
                     logger.warn("Invalid parent ID format: " + parentId, e);
                     ErrorHandler.handleValidationError(response, "Invalid parent ID format: " + parentId);
                     return;
                 }
             } else {
-                recordId = BO.createRecord(tririga, objectTypeId, fields);
+                recordId = BO.createRecord(tririga, objectTypeId, sectionToFields);
             }
             
             if (recordId.startsWith(BO.S_ERROR_PREFIX)) {
@@ -233,17 +234,17 @@ public abstract class BaseHandler {
      */
     public void handlePut(String recordId, JSONObject body, HttpServletResponse response) throws Exception {
         try {
-            // Map exposed field names to TRIRIGA field names
-            IntegrationField[] fields = fieldMapper.mapToTririgaFields(body);
-            
+            // Map exposed field names to TRIRIGA field names (sectioned for update)
+            java.util.Map<String, IntegrationField[]> sectionToFields = fieldMapper.mapToTririgaFieldsBySection(body);
+
             // Get object type ID
             Long objectTypeId = tririga.getObjectTypeId(
-                queryBuilder.getModule(), 
+                queryBuilder.getModule(),
                 queryBuilder.getBusinessObject()
             );
-            
+
             // Update record using BO helper
-            String result = BO.updateRecord(tririga, objectTypeId, fields, recordId, "triSave");
+            String result = BO.updateRecord(tririga, objectTypeId, sectionToFields, recordId, "triSave");
             
             if (result.startsWith(BO.S_ERROR_PREFIX)) {
                 // Parse error message to remove internal details

@@ -17,6 +17,10 @@ import com.tririga.ws.dto.ResponseHelper;
 import com.tririga.ws.dto.ResponseHelperHeader;
 import com.tririga.ws.dto.TriggerActions;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.log4j.Logger;
 
 /**
@@ -82,8 +86,79 @@ public class BO {
     }
 
     /**
+     * Update an existing record or create a new one, with fields grouped by section.
+     * TRIRIGA requires RecordInformation fields (e.g. triCurrencyUO) in IntegrationSection("RecordInformation").
+     *
+     * @param tws TRIRIGA Web Service instance
+     * @param objectTypeId Object type ID
+     * @param sectionToFields Map of section name to IntegrationField array (e.g. "RecordInformation", "General")
+     * @param recordId Record ID (-1 for create, existing ID for update)
+     * @param action Action name (e.g., "triCreate", "triSave")
+     * @return Record ID on success, error message on failure
+     */
+    protected static String updateRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields, String recordId, String action) {
+        StringBuilder response = new StringBuilder();
+        try {
+            ObjectType ot = tws.getObjectType(objectTypeId);
+
+            List<IntegrationSection> sectionList = new ArrayList<>();
+            // Preserve order: RecordInformation first, then General, then others
+            String[] sectionOrder = {"RecordInformation", "General"};
+            for (String sectionName : sectionOrder) {
+                IntegrationField[] fields = sectionToFields.get(sectionName);
+                if (fields != null && fields.length > 0) {
+                    IntegrationSection section = new IntegrationSection(sectionName);
+                    section.setFields(fields);
+                    sectionList.add(section);
+                }
+            }
+            for (Map.Entry<String, IntegrationField[]> e : sectionToFields.entrySet()) {
+                String sectionName = e.getKey();
+                if ("RecordInformation".equals(sectionName) || "General".equals(sectionName)) continue;
+                IntegrationField[] fields = e.getValue();
+                if (fields != null && fields.length > 0) {
+                    IntegrationSection section = new IntegrationSection(sectionName);
+                    section.setFields(fields);
+                    sectionList.add(section);
+                }
+            }
+
+            IntegrationSection[] sections = sectionList.toArray(new IntegrationSection[0]);
+            if (sections.length == 0) {
+                response.append(S_ERROR_PREFIX + "no fields to save");
+                return response.toString();
+            }
+
+            IntegrationRecord[] iRecord = new IntegrationRecord[1];
+            iRecord[0] = new IntegrationRecord();
+            iRecord[0].setSections(sections);
+            iRecord[0].setName(ot.getName());
+            iRecord[0].setId(Long.parseLong(recordId));
+            iRecord[0].setGuiId(tws.getDefaultGuiId(objectTypeId));
+            iRecord[0].setObjectTypeId(objectTypeId);
+            iRecord[0].setObjectTypeName(ot.getName());
+            iRecord[0].setActionName(action);
+
+            ResponseHelperHeader rhh = tws.saveRecord(iRecord);
+
+            if (rhh.getSuccessful() != 1) {
+                for (ResponseHelper hr : rhh.getResponseHelpers()) {
+                    response.append(S_ERROR_PREFIX + "saveRecord failed: " + hr.getStatus() + ":" + hr.getValue() + " ");
+                }
+            } else {
+                ResponseHelper hr = rhh.getResponseHelpers()[0];
+                response.append(Long.toString(hr.getRecordId()));
+            }
+        } catch (Exception e) {
+            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
+        }
+
+        return response.toString();
+    }
+
+    /**
      * Create a new record.
-     * 
+     *
      * @param tws TRIRIGA Web Service instance
      * @param objectTypeId Object type ID
      * @param generalFields Array of integration fields
@@ -95,7 +170,31 @@ public class BO {
             String recordId = updateRecord(tws, objectTypeId, generalFields, "-1", S_TRI_CREATEACTION);
             if (!recordId.startsWith(S_ERROR_PREFIX)) {
                 recordId = triggerSave(tws, recordId);
-            }   
+            }
+            response.append(recordId);
+        } catch (Exception e) {
+            logger.error("Error in createRecord for objectTypeId: " + objectTypeId, e);
+            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
+        }
+
+        return response.toString();
+    }
+
+    /**
+     * Create a new record with fields grouped by section.
+     *
+     * @param tws TRIRIGA Web Service instance
+     * @param objectTypeId Object type ID
+     * @param sectionToFields Map of section name to IntegrationField array
+     * @return Record ID on success, error message on failure
+     */
+    protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields) {
+        StringBuilder response = new StringBuilder();
+        try {
+            String recordId = updateRecord(tws, objectTypeId, sectionToFields, "-1", S_TRI_CREATEACTION);
+            if (!recordId.startsWith(S_ERROR_PREFIX)) {
+                recordId = triggerSave(tws, recordId);
+            }
             response.append(recordId);
         } catch (Exception e) {
             logger.error("Error in createRecord for objectTypeId: " + objectTypeId, e);
@@ -140,8 +239,42 @@ public class BO {
     }
 
     /**
+     * Create a new record with fields grouped by section, and associate with another record.
+     *
+     * @param tws TRIRIGA Web Service instance
+     * @param objectTypeId Object type ID
+     * @param sectionToFields Map of section name to IntegrationField array
+     * @param linkedRecordId ID of the record to associate with
+     * @param association Association name
+     * @return Record ID on success, error message on failure
+     */
+    protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields, String linkedRecordId, String association) {
+        StringBuilder response = new StringBuilder();
+        try {
+            String recordId = updateRecord(tws, objectTypeId, sectionToFields, "-1", S_TRI_CREATEACTION);
+            if (!recordId.startsWith(S_ERROR_PREFIX)) {
+                if (association != null && association.length() > 0) {
+                    recordId = associateRecord(tws, recordId, linkedRecordId, association);
+                    if (!recordId.startsWith(S_ERROR_PREFIX)) {
+                        recordId = triggerSave(tws, recordId);
+                    }
+                } else {
+                    recordId = triggerSave(tws, recordId);
+                }
+            }
+            response.append(recordId);
+        } catch (Exception e) {
+            logger.error("Error in createRecord with association for objectTypeId: " + objectTypeId +
+                ", linkedRecordId: " + linkedRecordId + ", association: " + association, e);
+            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
+        }
+
+        return response.toString();
+    }
+
+    /**
      * Associate two records.
-     * 
+     *
      * @param tws TRIRIGA Web Service instance
      * @param recordId Source record ID
      * @param linkedRecordId Target record ID
