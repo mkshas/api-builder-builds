@@ -176,7 +176,15 @@ public abstract class BaseHandler {
                 // Determine association name
                 associationName = determineAssociationName(parentIdParam);
             }
-            
+
+            // Optional: user-specified create action (e.g. "triCreateDraft", "triCreate") takes precedence over default fallback
+            String createAction = null;
+            if (body.has("action")) {
+                createAction = body.optString("action", null);
+                if (createAction != null && createAction.isEmpty()) createAction = null;
+                body.remove("action");
+            }
+
             // Map exposed field names to TRIRIGA field names, grouped by section
             // TRIRIGA requires RecordInformation fields (e.g. triCurrencyUO) in IntegrationSection("RecordInformation")
             java.util.Map<String, IntegrationField[]> sectionToFields = fieldMapper.mapToTririgaFieldsBySection(body);
@@ -192,14 +200,14 @@ public abstract class BaseHandler {
             if (parentId != null && !parentId.isEmpty() && associationName != null) {
                 try {
                     Long parentRecordId = Long.parseLong(parentId);
-                    recordId = BO.createRecord(tririga, objectTypeId, sectionToFields, parentId, associationName);
+                    recordId = BO.createRecord(tririga, objectTypeId, sectionToFields, parentId, associationName, createAction);
                 } catch (NumberFormatException e) {
                     logger.warn("Invalid parent ID format: " + parentId, e);
                     ErrorHandler.handleValidationError(response, "Invalid parent ID format: " + parentId);
                     return;
                 }
             } else {
-                recordId = BO.createRecord(tririga, objectTypeId, sectionToFields);
+                recordId = BO.createRecord(tririga, objectTypeId, sectionToFields, createAction);
             }
             
             if (recordId.startsWith(BO.S_ERROR_PREFIX)) {

@@ -33,6 +33,8 @@ public class BO {
 
     public static final Integer S_GUID_LENGTH = 5;
     static final String S_TRI_CREATEACTION = "triCreate";
+    /** Create actions to try in order - some BOs (e.g. Building) use triCreateDraft from state null */
+    private static final String[] CREATE_ACTIONS = {"triCreateDraft", "triCreate"};
     public static final String S_ERROR_PREFIX = "bo_error: ";
 
     protected BO() {
@@ -165,18 +167,49 @@ public class BO {
      * @return Record ID on success, error message on failure
      */
     protected static String createRecord(TririgaWS tws, Long objectTypeId, IntegrationField[] generalFields) {
-        StringBuilder response = new StringBuilder();
-        try {
-            String recordId = updateRecord(tws, objectTypeId, generalFields, "-1", S_TRI_CREATEACTION);
-            if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                recordId = triggerSave(tws, recordId);
-            }
-            response.append(recordId);
-        } catch (Exception e) {
-            logger.error("Error in createRecord for objectTypeId: " + objectTypeId, e);
-            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
-        }
+        return createRecordWithActionFallback(tws, objectTypeId, generalFields, null, null, null, null);
+    }
 
+    private static String createRecordWithActionFallback(TririgaWS tws, Long objectTypeId,
+            IntegrationField[] generalFields, Map<String, IntegrationField[]> sectionToFields,
+            String linkedRecordId, String association, String explicitAction) {
+        String[] actionsToTry = (explicitAction != null && !explicitAction.isEmpty())
+                ? new String[]{explicitAction}
+                : CREATE_ACTIONS;
+        StringBuilder response = new StringBuilder();
+        String lastError = null;
+        for (String action : actionsToTry) {
+            try {
+                String recordId;
+                if (sectionToFields != null) {
+                    recordId = updateRecord(tws, objectTypeId, sectionToFields, "-1", action);
+                } else {
+                    recordId = updateRecord(tws, objectTypeId, generalFields, "-1", action);
+                }
+                if (!recordId.startsWith(S_ERROR_PREFIX)) {
+                    if (association != null && association.length() > 0) {
+                        recordId = associateRecord(tws, recordId, linkedRecordId, association);
+                        if (!recordId.startsWith(S_ERROR_PREFIX)) {
+                            recordId = triggerSave(tws, recordId);
+                        }
+                    } else {
+                        recordId = triggerSave(tws, recordId);
+                    }
+                    response.append(recordId);
+                    return response.toString();
+                }
+                lastError = recordId;
+                if (recordId.contains("No transition exists") || recordId.contains("No transition exists on this Business Object")) {
+                    logger.debug("Create action " + action + " not available, trying next");
+                    continue;
+                }
+                break;
+            } catch (Exception e) {
+                lastError = S_ERROR_PREFIX + "exception:" + e.getMessage();
+                logger.debug("Create with action " + action + " failed: " + e.getMessage());
+            }
+        }
+        response.append(lastError != null ? lastError : S_ERROR_PREFIX + "create failed");
         return response.toString();
     }
 
@@ -189,19 +222,17 @@ public class BO {
      * @return Record ID on success, error message on failure
      */
     protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields) {
-        StringBuilder response = new StringBuilder();
-        try {
-            String recordId = updateRecord(tws, objectTypeId, sectionToFields, "-1", S_TRI_CREATEACTION);
-            if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                recordId = triggerSave(tws, recordId);
-            }
-            response.append(recordId);
-        } catch (Exception e) {
-            logger.error("Error in createRecord for objectTypeId: " + objectTypeId, e);
-            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
-        }
+        return createRecordWithActionFallback(tws, objectTypeId, null, sectionToFields, null, null, null);
+    }
 
-        return response.toString();
+    /**
+     * Create a new record with optional explicit action.
+     * When createAction is non-null, it takes precedence over the default fallback (triCreateDraft, triCreate).
+     *
+     * @param createAction Optional action (e.g. "triCreateDraft", "triCreate"). When null, uses default fallback.
+     */
+    protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields, String createAction) {
+        return createRecordWithActionFallback(tws, objectTypeId, null, sectionToFields, null, null, createAction);
     }
 
     /**
@@ -215,27 +246,7 @@ public class BO {
      * @return Record ID on success, error message on failure
      */
     protected static String createRecord(TririgaWS tws, Long objectTypeId, IntegrationField[] generalFields, String linkedRecordId, String association) {
-        StringBuilder response = new StringBuilder();
-        try {
-            String recordId = updateRecord(tws, objectTypeId, generalFields, "-1", S_TRI_CREATEACTION);
-            if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                if (association != null && association.length() > 0) {
-                    recordId = associateRecord(tws, recordId, linkedRecordId, association);
-                    if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                        recordId = triggerSave(tws, recordId);
-                    }
-                } else {
-                    recordId = triggerSave(tws, recordId);
-                }
-            }   
-            response.append(recordId);
-        } catch (Exception e) {
-            logger.error("Error in createRecord with association for objectTypeId: " + objectTypeId + 
-                ", linkedRecordId: " + linkedRecordId + ", association: " + association, e);
-            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
-        }
-
-        return response.toString();
+        return createRecordWithActionFallback(tws, objectTypeId, generalFields, null, linkedRecordId, association, null);
     }
 
     /**
@@ -249,27 +260,16 @@ public class BO {
      * @return Record ID on success, error message on failure
      */
     protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields, String linkedRecordId, String association) {
-        StringBuilder response = new StringBuilder();
-        try {
-            String recordId = updateRecord(tws, objectTypeId, sectionToFields, "-1", S_TRI_CREATEACTION);
-            if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                if (association != null && association.length() > 0) {
-                    recordId = associateRecord(tws, recordId, linkedRecordId, association);
-                    if (!recordId.startsWith(S_ERROR_PREFIX)) {
-                        recordId = triggerSave(tws, recordId);
-                    }
-                } else {
-                    recordId = triggerSave(tws, recordId);
-                }
-            }
-            response.append(recordId);
-        } catch (Exception e) {
-            logger.error("Error in createRecord with association for objectTypeId: " + objectTypeId +
-                ", linkedRecordId: " + linkedRecordId + ", association: " + association, e);
-            response.append(S_ERROR_PREFIX + "exception:" + e.getMessage());
-        }
+        return createRecordWithActionFallback(tws, objectTypeId, null, sectionToFields, linkedRecordId, association, null);
+    }
 
-        return response.toString();
+    /**
+     * Create a new record with sectioned fields, optional association, and optional explicit action.
+     *
+     * @param createAction Optional action (e.g. "triCreateDraft", "triCreate"). When null, uses default fallback.
+     */
+    protected static String createRecord(TririgaWS tws, Long objectTypeId, Map<String, IntegrationField[]> sectionToFields, String linkedRecordId, String association, String createAction) {
+        return createRecordWithActionFallback(tws, objectTypeId, null, sectionToFields, linkedRecordId, association, createAction);
     }
 
     /**
